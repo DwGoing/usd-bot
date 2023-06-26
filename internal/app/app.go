@@ -24,10 +24,10 @@ type App struct {
 	volumPerTransaction    int64
 	volumMaximum           int64
 	balances               map[string]float64
+	balancesUpdateTime     int64
 }
 
 func (app *App) Initialize() error {
-	log.SetPrefix("[App]")
 	callbackChannel := make(chan any, 1024)
 	app.binanceMessageCallback = callbackChannel
 	app.symbols = make([]string, len(app.Symbols.Value()))
@@ -37,7 +37,7 @@ func (app *App) Initialize() error {
 	for i, v := range app.Symbols.Value() {
 		arr := strings.Split(v.(string), "/")
 		if len(arr) != 2 {
-			log.Printf("invaild symbol: %s", v)
+			log.Printf("非法交易对: %s", v)
 			continue
 		}
 		app.symbols[i] = ""
@@ -46,7 +46,8 @@ func (app *App) Initialize() error {
 			app.symbols[i] += av
 		}
 	}
-	app.BinanceService.InitializeWebsocket()
+	app.initializeWebsocket()
+	// 接收消息
 	go func() {
 		defer close(callbackChannel)
 		for {
@@ -54,16 +55,38 @@ func (app *App) Initialize() error {
 			switch response := response.(type) {
 			case service.AccountStatusResponse:
 				app.updateBalance(response.Result.Balances)
-				app.BinanceService.SendTickerPriceMessage(app.symbols, app.binanceMessageCallback)
 			case service.TickerPriceResponse:
 				app.trade(response.Result)
 			case service.OrderPlaceResponse:
 			}
 		}
 	}()
-
-	app.BinanceService.SendAccountStatusMessage(app.binanceMessageCallback)
+	// 更新余额
+	go func() {
+		for {
+			if time.Now().Unix()-app.balancesUpdateTime >= 60 {
+				app.BinanceService.SendAccountStatusMessage(app.binanceMessageCallback)
+			}
+			time.Sleep(time.Second * 60)
+		}
+	}()
+	// 获取最新价格
+	go func() {
+		for {
+			app.BinanceService.SendTickerPriceMessage(app.symbols, app.binanceMessageCallback)
+			time.Sleep(time.Second * 10)
+		}
+	}()
 	return nil
+}
+
+func (app *App) initializeWebsocket() {
+	err := app.BinanceService.InitializeWebsocket()
+	// 重试
+	for err != nil {
+		time.Sleep(time.Second * 3)
+		err = app.BinanceService.InitializeWebsocket()
+	}
 }
 
 func (app *App) updateBalance(balances []service.AccountStatusResultBalance) {
@@ -77,7 +100,7 @@ func (app *App) updateBalance(balances []service.AccountStatusResultBalance) {
 		}
 		app.balances[v.Asset] = balance
 	}
-	log.Printf("balances updated: %+v", app.balances)
+	log.Printf("余额已更新: %+v", app.balances)
 }
 
 func (app *App) trade(prices []service.TickerPriceResultItem) {
@@ -120,12 +143,7 @@ func (app *App) trade(prices []service.TickerPriceResultItem) {
 		}
 	}
 	if heightPrice > 1.0005 {
-		log.Printf("%s price: %f", symbol, heightPrice)
+		log.Printf("当前最高价: %s, %f", symbol, heightPrice)
 		app.BinanceService.SendOrderPlaceMessage(symbol, side, "MARKET", app.volumPerTransaction, app.binanceMessageCallback)
-		time.Sleep(time.Second * 60)
-		app.BinanceService.SendAccountStatusMessage(app.binanceMessageCallback)
-	} else {
-		time.Sleep(time.Second * 10)
-		app.BinanceService.SendTickerPriceMessage(app.symbols, app.binanceMessageCallback)
 	}
 }

@@ -28,9 +28,118 @@ type BinanceService struct {
 }
 
 func NewBinanceService(service *BinanceService) (*BinanceService, error) {
-	log.SetPrefix("[BinanceService]")
 	service.requests = make(map[string]any)
 	return service, nil
+}
+
+func (service *BinanceService) InitializeWebsocket() error {
+	conn, _, err := websocket.DefaultDialer.Dial(service.WebsocketUrl.Value(), nil)
+	if err != nil {
+		log.Printf("初始化websocket异常: %s", err)
+		return err
+	}
+	service.connection = conn
+	go func() {
+		defer conn.Close()
+		for {
+			err := service.receiveMessage()
+			if err != nil {
+				log.Printf("接收消息异常: %s", err)
+				// 断线重连
+				err = service.InitializeWebsocket()
+				for err != nil {
+					time.Sleep(time.Second * 3)
+					err = service.InitializeWebsocket()
+				}
+				break
+			}
+		}
+	}()
+	// health check
+	// go func() {
+	// 	for {
+	// 		err := service.SendPingMessage()
+	// 		if err != nil {
+	// 			log.Printf("ping error: %s", err)
+	// 			time.Sleep(time.Second * 3)
+	// 			service.InitializeWebsocket()
+	// 			return
+	// 		}
+	// 		time.Sleep(time.Second * 30)
+	// 	}
+	// }()
+	return nil
+}
+
+func (service *BinanceService) receiveMessage() error {
+	_, msgBytes, err := service.connection.ReadMessage()
+	if err != nil {
+		return err
+	}
+	// log.Printf("接收消息: %s", msgBytes)
+	var response Response
+	err = json.Unmarshal(msgBytes, &response)
+	if err != nil {
+		return err
+	}
+	request, ok := service.requests[response.Id]
+	if !ok {
+		return nil
+	}
+	switch request := request.(type) {
+	case AccountStatusRequest:
+		var response AccountStatusResponse
+		err = json.Unmarshal(msgBytes, &response)
+		if err != nil {
+			return nil
+		}
+		if request.Callback == nil {
+			return nil
+		}
+		request.Callback <- response
+	case TickerPriceRequest:
+		var response TickerPriceResponse
+		err = json.Unmarshal(msgBytes, &response)
+		if err != nil {
+			return nil
+		}
+		if request.Callback == nil {
+			return nil
+		}
+		request.Callback <- response
+	case OrderPlaceRequest:
+		var response OrderPlaceResponse
+		err = json.Unmarshal(msgBytes, &response)
+		if err != nil {
+			return nil
+		}
+		if request.Callback == nil {
+			return nil
+		}
+		request.Callback <- response
+	}
+	delete(service.requests, response.Id)
+	return nil
+}
+
+func (service *BinanceService) sendMessage(id string, request any) error {
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	log.Printf("发送消息: %s", requestBytes)
+	err = service.connection.WriteMessage(1, requestBytes)
+	if err != nil {
+		return err
+	}
+	service.requests[id] = request
+	return nil
+}
+
+func sign(data string, key string) string {
+	h := hmac.New(sha256.New, []byte(key))
+	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type Request struct {
@@ -61,56 +170,6 @@ type RateLimit struct {
 	IntervalNum   int    `json:"intervalNum"`
 	Limit         int    `json:"limit"`
 	Count         int    `json:"count"`
-}
-
-func (service *BinanceService) InitializeWebsocket() {
-	conn, _, err := websocket.DefaultDialer.Dial(service.WebsocketUrl.Value(), nil)
-	if err != nil {
-		log.Printf("initializ websocket error: %s", err)
-		time.Sleep(time.Second * 3)
-		service.InitializeWebsocket()
-		return
-	}
-	service.connection = conn
-	go func() {
-		defer conn.Close()
-		for {
-			service.receiveMessage()
-		}
-	}()
-	// health check
-	// go func() {
-	// 	for {
-	// 		err := service.SendPingMessage()
-	// 		if err != nil {
-	// 			log.Printf("ping error: %s", err)
-	// 			time.Sleep(time.Second * 3)
-	// 			service.InitializeWebsocket()
-	// 			return
-	// 		}
-	// 		time.Sleep(time.Second * 30)
-	// 	}
-	// }()
-}
-
-func (service *BinanceService) sendMessage(id string, request any) error {
-	requestBytes, err := json.Marshal(request)
-	if err != nil {
-		return err
-	}
-	log.Printf("send message: %s", requestBytes)
-	err = service.connection.WriteMessage(1, requestBytes)
-	if err != nil {
-		return err
-	}
-	service.requests[id] = request
-	return nil
-}
-
-func sign(data string, key string) string {
-	h := hmac.New(sha256.New, []byte(key))
-	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (service *BinanceService) SendPingMessage() error {
@@ -246,57 +305,4 @@ func (service *BinanceService) SendOrderPlaceMessage(symbol string, side string,
 		return err
 	}
 	return nil
-}
-
-func (service *BinanceService) receiveMessage() {
-	_, msgBytes, err := service.connection.ReadMessage()
-	if err != nil {
-		log.Printf("receive message error: %s", err)
-		service.InitializeWebsocket()
-		return
-	} else {
-		// log.Printf("receive message: %s", msgBytes)
-		var response Response
-		err := json.Unmarshal(msgBytes, &response)
-		if err != nil {
-			return
-		}
-		request, ok := service.requests[response.Id]
-		if !ok {
-			return
-		}
-		switch request := request.(type) {
-		case AccountStatusRequest:
-			var response AccountStatusResponse
-			err = json.Unmarshal(msgBytes, &response)
-			if err != nil {
-				return
-			}
-			if request.Callback == nil {
-				return
-			}
-			request.Callback <- response
-		case TickerPriceRequest:
-			var response TickerPriceResponse
-			err = json.Unmarshal(msgBytes, &response)
-			if err != nil {
-				return
-			}
-			if request.Callback == nil {
-				return
-			}
-			request.Callback <- response
-		case OrderPlaceRequest:
-			var response OrderPlaceResponse
-			err = json.Unmarshal(msgBytes, &response)
-			if err != nil {
-				return
-			}
-			if request.Callback == nil {
-				return
-			}
-			request.Callback <- response
-		}
-		delete(service.requests, response.Id)
-	}
 }
