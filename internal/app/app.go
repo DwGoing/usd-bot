@@ -66,6 +66,7 @@ func (app *App) Initialize() error {
 		for {
 			if time.Now().Unix()-app.balancesUpdateTime >= 60 {
 				app.BinanceService.SendAccountStatusMessage(app.binanceMessageCallback)
+				app.balancesUpdateTime = time.Now().Unix()
 			}
 			time.Sleep(time.Second * 60)
 		}
@@ -104,7 +105,7 @@ func (app *App) updateBalance(balances []service.AccountStatusResultBalance) {
 }
 
 func (app *App) trade(prices []service.TickerPriceResultItem) {
-	log.Printf("%+v", prices)
+	log.Printf("当前价格: %+v", prices)
 	var symbol string
 	var side string
 	var heightPrice float64
@@ -142,8 +143,10 @@ func (app *App) trade(prices []service.TickerPriceResultItem) {
 			}
 		}
 	}
+	log.Printf("当前最高价: %s, %f", symbol, heightPrice)
 	if heightPrice > 1.0005 {
-		log.Printf("当前最高价: %s, %f", symbol, heightPrice)
 		app.BinanceService.SendOrderPlaceMessage(symbol, side, "MARKET", app.volumPerTransaction, app.binanceMessageCallback)
+		app.BinanceService.SendAccountStatusMessage(app.binanceMessageCallback)
+		app.balancesUpdateTime = time.Now().Unix()
 	}
 }

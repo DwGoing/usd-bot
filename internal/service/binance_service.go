@@ -127,7 +127,7 @@ func (service *BinanceService) sendMessage(id string, request any) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("发送消息: %s", requestBytes)
+	// log.Printf("发送消息: %s", requestBytes)
 	err = service.connection.WriteMessage(1, requestBytes)
 	if err != nil {
 		return err
